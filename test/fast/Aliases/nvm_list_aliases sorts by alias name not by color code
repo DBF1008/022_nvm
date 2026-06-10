@@ -1,0 +1,37 @@
+#!/bin/sh
+
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+die () { echo "$@" ; exit 1; }
+
+set -e
+
+# Force colors on to exercise the sort-key-prefix logic
+nvm_has_colors() { return 0; }
+
+nvm_alias_path() {
+  nvm_echo "../../../alias"
+}
+
+# Create two aliases with names that should sort deterministically:
+# sorttest-aaa comes before sorttest-zzz alphabetically.
+command mkdir -p ../../../alias
+echo "0.0.1" > ../../../alias/sorttest-aaa
+echo "0.0.2" > ../../../alias/sorttest-zzz
+
+OUTPUT="$(nvm_list_aliases sorttest | strip_colors)"
+
+# Extract alias names in order
+FIRST_ALIAS="$(echo "${OUTPUT}" | head -n 1 | awk '{print $1}')"
+SECOND_ALIAS="$(echo "${OUTPUT}" | head -n 2 | tail -n 1 | awk '{print $1}')"
+
+[ "${FIRST_ALIAS}" = "sorttest-aaa" ] \
+  || die "Expected first alias to be sorttest-aaa, got >${FIRST_ALIAS}<"
+[ "${SECOND_ALIAS}" = "sorttest-zzz" ] \
+  || die "Expected second alias to be sorttest-zzz, got >${SECOND_ALIAS}<"
+
+# Cleanup
+rm -f ../../../alias/sorttest-aaa
+rm -f ../../../alias/sorttest-zzz

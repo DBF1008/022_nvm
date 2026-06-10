@@ -1210,40 +1210,51 @@ nvm_print_formatted_alias() {
   fi
 }
 
-nvm_print_alias_path() {
-  local NVM_ALIAS_DIR
-  NVM_ALIAS_DIR="${1-}"
-  if [ -z "${NVM_ALIAS_DIR}" ]; then
-    nvm_err 'An alias dir is required.'
-    return 1
-  fi
-  local ALIAS_PATH
-  ALIAS_PATH="${2-}"
-  if [ -z "${ALIAS_PATH}" ]; then
-    nvm_err 'An alias path is required.'
-    return 2
-  fi
+nvm_print_resolved_alias() {
   local ALIAS
-  ALIAS="${ALIAS_PATH##"${NVM_ALIAS_DIR}"\/}"
   local DEST
-  DEST="$(nvm_alias "${ALIAS}" 2>/dev/null)" ||:
+  local IS_DEFAULT
+  IS_DEFAULT="${1-}"
+  shift
+
+  case "${IS_DEFAULT}" in
+    true)
+      ALIAS="${1-}"
+      if [ -z "${ALIAS}" ]; then
+        nvm_err 'A default alias is required.'
+        return 1
+      fi
+      DEST="$(nvm_print_implicit_alias local "${ALIAS}")"
+    ;;
+    *)
+      local NVM_ALIAS_DIR
+      NVM_ALIAS_DIR="${1-}"
+      if [ -z "${NVM_ALIAS_DIR}" ]; then
+        nvm_err 'An alias dir is required.'
+        return 1
+      fi
+      local ALIAS_PATH
+      ALIAS_PATH="${2-}"
+      if [ -z "${ALIAS_PATH}" ]; then
+        nvm_err 'An alias path is required.'
+        return 2
+      fi
+      ALIAS="${ALIAS_PATH##"${NVM_ALIAS_DIR}"\/}"
+      DEST="$(nvm_alias "${ALIAS}" 2>/dev/null)" ||:
+    ;;
+  esac
+
   if [ -n "${DEST}" ]; then
-    NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_LTS="${NVM_LTS-}" DEFAULT=false nvm_print_formatted_alias "${ALIAS}" "${DEST}"
+    NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_LTS="${NVM_LTS-}" DEFAULT="${IS_DEFAULT}" nvm_print_formatted_alias "${ALIAS}" "${DEST}"
   fi
 }
 
+nvm_print_alias_path() {
+  nvm_print_resolved_alias false "$@"
+}
+
 nvm_print_default_alias() {
-  local ALIAS
-  ALIAS="${1-}"
-  if [ -z "${ALIAS}" ]; then
-    nvm_err 'A default alias is required.'
-    return 1
-  fi
-  local DEST
-  DEST="$(nvm_print_implicit_alias local "${ALIAS}")"
-  if [ -n "${DEST}" ]; then
-    NVM_NO_COLORS="${NVM_NO_COLORS-}" DEFAULT=true nvm_print_formatted_alias "${ALIAS}" "${DEST}"
-  fi
+  nvm_print_resolved_alias true "$@"
 }
 
 nvm_make_alias() {
@@ -1260,6 +1271,10 @@ nvm_make_alias() {
     return 2
   fi
   nvm_echo "${VERSION}" | tee "$(nvm_alias_path)/${ALIAS}" >/dev/null
+}
+
+nvm_alias_sort_strip_keys() {
+  command sort -t "$(printf '\t')" -k1,1 | command cut -f2-
 }
 
 nvm_list_aliases() {
@@ -1287,10 +1302,17 @@ nvm_list_aliases() {
   (
     local ALIAS_PATH
     for ALIAS_PATH in "${NVM_ALIAS_DIR}/${ALIAS}"*; do
-      NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_HAS_COLORS="${NVM_HAS_COLORS}" NVM_CURRENT="${NVM_CURRENT}" nvm_print_alias_path "${NVM_ALIAS_DIR}" "${ALIAS_PATH}" &
+      {
+        local SORT_KEY SORT_OUTPUT
+        SORT_KEY="${ALIAS_PATH##"${NVM_ALIAS_DIR}"/}"
+        SORT_OUTPUT="$(NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_HAS_COLORS="${NVM_HAS_COLORS}" NVM_CURRENT="${NVM_CURRENT}" nvm_print_alias_path "${NVM_ALIAS_DIR}" "${ALIAS_PATH}")"
+        if [ -n "${SORT_OUTPUT}" ]; then
+          command printf '%s\t%s\n' "${SORT_KEY}" "${SORT_OUTPUT}"
+        fi
+      } &
     done
     wait
-  ) | command sort
+  ) | nvm_alias_sort_strip_keys
 
   (
     local ALIAS_NAME
@@ -1298,26 +1320,32 @@ nvm_list_aliases() {
       {
         # shellcheck disable=SC2030,SC2031 # (https://github.com/koalaman/shellcheck/issues/2217)
         if [ ! -f "${NVM_ALIAS_DIR}/${ALIAS_NAME}" ] && { [ -z "${ALIAS}" ] || [ "${ALIAS_NAME}" = "${ALIAS}" ]; }; then
-          NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_HAS_COLORS="${NVM_HAS_COLORS}" NVM_CURRENT="${NVM_CURRENT}" nvm_print_default_alias "${ALIAS_NAME}"
+          local SORT_OUTPUT
+          SORT_OUTPUT="$(NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_HAS_COLORS="${NVM_HAS_COLORS}" NVM_CURRENT="${NVM_CURRENT}" nvm_print_default_alias "${ALIAS_NAME}")"
+          if [ -n "${SORT_OUTPUT}" ]; then
+            command printf '%s\t%s\n' "${ALIAS_NAME}" "${SORT_OUTPUT}"
+          fi
         fi
       } &
     done
     wait
-  ) | command sort
+  ) | nvm_alias_sort_strip_keys
 
   (
     local LTS_ALIAS
     # shellcheck disable=SC2030,SC2031 # (https://github.com/koalaman/shellcheck/issues/2217)
     for ALIAS_PATH in "${NVM_ALIAS_DIR}/lts/${ALIAS}"*; do
       {
+        local SORT_KEY
+        SORT_KEY="${ALIAS_PATH##"${NVM_ALIAS_DIR}"/}"
         LTS_ALIAS="$(NVM_NO_COLORS="${NVM_NO_COLORS-}" NVM_HAS_COLORS="${NVM_HAS_COLORS}" NVM_LTS=true nvm_print_alias_path "${NVM_ALIAS_DIR}" "${ALIAS_PATH}")"
         if [ -n "${LTS_ALIAS}" ]; then
-          nvm_echo "${LTS_ALIAS}"
+          command printf '%s\t%s\n' "${SORT_KEY}" "${LTS_ALIAS}"
         fi
       } &
     done
     wait
-  ) | command sort
+  ) | nvm_alias_sort_strip_keys
   return
 }
 
@@ -1388,12 +1416,13 @@ nvm_resolve_alias() {
       break
     fi
 
-    if command printf '%b' "${SEEN_ALIASES}" | nvm_grep -q -e "^${ALIAS_TEMP}$"; then
+    if command printf '%s\n' "${SEEN_ALIASES}" | nvm_grep -q -F -x "${ALIAS_TEMP}"; then
       ALIAS="∞"
       break
     fi
 
-    SEEN_ALIASES="${SEEN_ALIASES}\\n${ALIAS_TEMP}"
+    SEEN_ALIASES="${SEEN_ALIASES}
+${ALIAS_TEMP}"
     ALIAS="${ALIAS_TEMP}"
   done
 

@@ -1,0 +1,31 @@
+#!/bin/sh
+\. ../../../common.sh
+
+die () { echo "$@" ; exit 1; }
+
+: nvm.sh
+\. ../../../../nvm.sh
+
+# The circular/setup creates: loopback->loopback, one->two->three->one, four->two
+# The parent Aliases/setup creates test-stable-* aliases pointing to installed versions
+
+# List all aliases and check both circular and normal appear correctly
+OUTPUT="$(nvm alias | strip_colors)"
+
+# Circular aliases should show infinity
+echo "${OUTPUT}" | command grep -q -F "loopback -> loopback (-> ∞)" \
+  || die "Expected loopback circular alias in listing"
+
+echo "${OUTPUT}" | command grep -q -F "one -> two (-> ∞)" \
+  || die "Expected 'one' circular alias in listing"
+
+# Normal aliases should show resolved versions
+echo "${OUTPUT}" | command grep -q -F "test-stable-1" \
+  || die "Expected test-stable-1 normal alias in listing"
+
+# Within the user-alias group, entries should be sorted alphabetically.
+# Extract user aliases (those that are not "(default)" and not "lts/")
+USER_ALIASES="$(echo "${OUTPUT}" | command grep -v '(default)' | command grep -v '^lts/' || true)"
+USER_SORTED="$(echo "${USER_ALIASES}" | sort)"
+[ "${USER_ALIASES}" = "${USER_SORTED}" ] \
+  || die "User aliases are not sorted alphabetically"

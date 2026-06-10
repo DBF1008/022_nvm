@@ -1,0 +1,36 @@
+#!/bin/sh
+
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+die () { echo "$@" ; exit 1; }
+
+set -e
+
+ORIGINAL_IFS="${IFS}"
+
+# Test nvm_resolve_alias with IFS=':'
+IFS=':'
+STABLE_ALIAS="$(nvm_resolve_alias test-stable-1)"
+[ "_${STABLE_ALIAS}" = "_v0.0.1" ] \
+  || die "nvm_resolve_alias with IFS=':' failed; expected v0.0.1, got ${STABLE_ALIAS}"
+IFS="${ORIGINAL_IFS}"
+
+# Test nvm alias listing with IFS='|'
+IFS='|'
+NVM_ALIAS_OUTPUT="$(nvm alias test-stable-1 | strip_colors)"
+case "${NVM_ALIAS_OUTPUT}" in
+  *"test-stable-1"*"0.0.1"*) : ;;
+  *) die "nvm alias listing with IFS='|' failed; got ${NVM_ALIAS_OUTPUT}" ;;
+esac
+IFS="${ORIGINAL_IFS}"
+
+# Test nvm_list_aliases with IFS=','
+IFS=','
+LIST_OUTPUT="$(nvm_list_aliases test-stable-1 | strip_colors)"
+case "${LIST_OUTPUT}" in
+  *"test-stable-1"*) : ;;
+  *) die "nvm_list_aliases with IFS=',' failed; got ${LIST_OUTPUT}" ;;
+esac
+IFS="${ORIGINAL_IFS}"

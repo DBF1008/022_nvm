@@ -1,0 +1,32 @@
+#!/bin/sh
+
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+die () { echo "$@" ; exit 1; }
+
+set -e
+
+# With --no-colors, output must NOT contain ANSI escape codes
+OUTPUT_NO_COLORS="$(nvm alias --no-colors test-stable-1)"
+case "${OUTPUT_NO_COLORS}" in
+  *'[0;'*'m'*) die "Expected no ANSI codes with --no-colors, got >${OUTPUT_NO_COLORS}<" ;;
+esac
+
+# Verify the content is still correct (alias name and target are present)
+STRIPPED="$(echo "${OUTPUT_NO_COLORS}" | strip_colors)"
+case "${STRIPPED}" in
+  *"test-stable-1"*"0.0.1"*) : ;;
+  *) die "Colorless output missing expected content; got >${STRIPPED}<" ;;
+esac
+
+# Verify --no-colors works with nvm_list_aliases too
+LIST_OUTPUT="$(NVM_NO_COLORS='--no-colors' nvm_list_aliases test-stable-1)"
+case "${LIST_OUTPUT}" in
+  *'[0;'*'m'*) die "Expected no ANSI codes in nvm_list_aliases with NVM_NO_COLORS, got >${LIST_OUTPUT}<" ;;
+esac
+case "${LIST_OUTPUT}" in
+  *"test-stable-1"*"0.0.1"*) : ;;
+  *) die "nvm_list_aliases --no-colors missing expected content; got >${LIST_OUTPUT}<" ;;
+esac
