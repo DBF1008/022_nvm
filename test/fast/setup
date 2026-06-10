@@ -9,6 +9,6 @@ set -ex
 
   type setopt >/dev/null 2>&1 && setopt NULL_GLOB
   type shopt >/dev/null 2>&1 && shopt -s nullglob
-  rm -Rf v* src alias
+  rm -Rf v* src alias .cache/index_tab
   mkdir src alias
 )

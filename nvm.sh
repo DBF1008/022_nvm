@@ -1725,39 +1725,30 @@ nvm_ls_remote_index_tab() {
   fi
 
   nvm_is_zsh && setopt local_options shwordsplit
-  local VERSION_LIST
-  VERSION_LIST="$(nvm_download -L -s "${MIRROR}/index.tab" -o - \
-    | command sed "
-        1d;
-        s/^/${PREFIX}/;
-      " \
-  )"
-  local LTS_ALIAS
-  local LTS_VERSION
-  command mkdir -p "$(nvm_alias_path)/lts"
-  { command awk '{
-        if ($10 ~ /^\-?$/) { next }
-        if ($10 && !a[tolower($10)]++) {
-          if (alias) { print alias, version }
-          alias_name = "lts/" tolower($10)
-          if (!alias) { print "lts/*", alias_name }
-          alias = alias_name
-          version = $1
-        }
-      }
-      END {
-        if (alias) {
-          print alias, version
-        }
-      }' \
-    | while read -r LTS_ALIAS_LINE; do
-      LTS_ALIAS="${LTS_ALIAS_LINE%% *}"
-      LTS_VERSION="${LTS_ALIAS_LINE#* }"
-      nvm_make_alias "${LTS_ALIAS}" "${LTS_VERSION}" >/dev/null 2>&1
-    done; } << EOF
-$VERSION_LIST
-EOF
 
+  # index.tab file cache (5-minute TTL)
+  local CACHE_DIR
+  CACHE_DIR="$(nvm_cache_dir)/index_tab"
+  local CACHE_KEY
+  CACHE_KEY="$(nvm_echo "${MIRROR}" | command sed 's/[^a-zA-Z0-9]/_/g')"
+  local CACHE_FILE
+  CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}"
+  command mkdir -p "${CACHE_DIR}"
+
+  local VERSION_LIST
+  if [ -f "${CACHE_FILE}" ] && [ -n "$(command find "${CACHE_FILE}" -mmin -5 2>/dev/null)" ]; then
+    VERSION_LIST="$(command cat "${CACHE_FILE}")"
+  else
+    VERSION_LIST="$(nvm_download -L -s "${MIRROR}/index.tab" -o - \
+      | command sed "
+          1d;
+          s/^/${PREFIX}/;
+        " \
+    )"
+    nvm_echo "${VERSION_LIST}" > "${CACHE_FILE}"
+  fi
+
+  # Normalize LTS filter before awk (needed as awk -v input)
   if [ -n "${LTS-}" ]; then
     if ! LTS="$(nvm_normalize_lts "lts/${LTS}")"; then
       return $?
@@ -1765,8 +1756,22 @@ EOF
     LTS="${LTS#lts/}"
   fi
 
-  VERSIONS="$( { command awk -v lts="${LTS-}" '{
+  # Single awk pass: extract LTS aliases to temp file + filter versions to stdout
+  local ALIAS_FILE
+  ALIAS_FILE="${CACHE_DIR}/lts_aliases_$$"
+  command mkdir -p "$(nvm_alias_path)/lts"
+
+  VERSIONS="$( { command awk -v lts="${LTS-}" -v alias_file="${ALIAS_FILE}" '{
         if (!$1) { next }
+        # LTS alias extraction (side effect -> alias_file)
+        if ($10 !~ /^\-?$/ && $10 && !alias_seen[tolower($10)]++) {
+          if (!first_alias) {
+            print "lts/*", "lts/" tolower($10) > alias_file
+            first_alias = 1
+          }
+          print "lts/" tolower($10), $1 > alias_file
+        }
+        # Version filtering (main output -> stdout)
         if (lts && $10 ~ /^\-?$/) { next }
         if (lts && lts != "*" && tolower($10) !~ tolower(lts)) { next }
         if ($10 !~ /^\-?$/) {
@@ -1785,6 +1790,19 @@ EOF
 $VERSION_LIST
 EOF
 )"
+
+  # Process LTS aliases from temp file
+  if [ -f "${ALIAS_FILE}" ]; then
+    local LTS_ALIAS
+    local LTS_VERSION
+    while read -r LTS_ALIAS_LINE; do
+      LTS_ALIAS="${LTS_ALIAS_LINE%% *}"
+      LTS_VERSION="${LTS_ALIAS_LINE#* }"
+      nvm_make_alias "${LTS_ALIAS}" "${LTS_VERSION}" >/dev/null 2>&1
+    done < "${ALIAS_FILE}"
+    command rm -f "${ALIAS_FILE}"
+  fi
+
   if [ -z "${VERSIONS}" ]; then
     nvm_echo 'N/A'
     return 3

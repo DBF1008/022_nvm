@@ -1,0 +1,194 @@
+#!/bin/sh
+
+die () { echo "$@" ; cleanup ; exit 1; }
+
+cleanup() {
+  unset -f nvm_download nvm_make_alias
+  rm -rf "$TEST_WORK_DIR"
+  rm -rf "$(nvm_cache_dir)/index_tab"
+}
+
+: nvm.sh
+\. ../../../nvm.sh
+
+\. ../../common.sh
+
+MOCKS_DIR="$PWD/mocks"
+TAB_PATH="$MOCKS_DIR/nodejs.org-dist-index.tab"
+NIGHTLY_TAB_PATH="$MOCKS_DIR/nodejs.org-download-nightly-index.tab"
+
+TEST_WORK_DIR="$PWD/test_caching_output"
+mkdir -p "$TEST_WORK_DIR"
+DOWNLOAD_COUNT_FILE="$TEST_WORK_DIR/download_count.txt"
+
+reset_download_count() {
+  echo 0 > "$DOWNLOAD_COUNT_FILE"
+}
+
+get_download_count() {
+  cat "$DOWNLOAD_COUNT_FILE"
+}
+
+# Clear any stale index_tab cache before tests
+rm -rf "$(nvm_cache_dir)/index_tab"
+
+# --- Test 1: Single invocation triggers exactly one download ---
+
+reset_download_count
+nvm_download() {
+  local count
+  count="$(cat "$DOWNLOAD_COUNT_FILE")"
+  count="$((count + 1))"
+  echo "$count" > "$DOWNLOAD_COUNT_FILE"
+  cat "$TAB_PATH"
+}
+
+OUTPUT="$(nvm_ls_remote)"
+EXPECTED_OUTPUT="$(cat "$MOCKS_DIR/nvm_ls_remote.txt")"
+
+[ "_$OUTPUT" = "_$EXPECTED_OUTPUT" ] \
+  || die "Test 1a: output mismatch after single nvm_ls_remote"
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 1b: expected 1 download call, got $(get_download_count)"
+
+# --- Test 2: Second call hits cache (no additional download) ---
+
+OUTPUT2="$(nvm_ls_remote)"
+
+[ "_$OUTPUT2" = "_$EXPECTED_OUTPUT" ] \
+  || die "Test 2a: cached output mismatch"
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 2b: expected still 1 download call after cache hit, got $(get_download_count)"
+
+# --- Test 3: Implicit alias (stable) uses cache - single download ---
+
+rm -rf "$(nvm_cache_dir)/index_tab"
+reset_download_count
+
+OUTPUT="$(nvm_ls_remote stable)"
+EXPECTED_OUTPUT="$(cat "$MOCKS_DIR/nvm_ls_remote stable.txt")"
+
+[ "_$OUTPUT" = "_$EXPECTED_OUTPUT" ] \
+  || die "Test 3a: nvm_ls_remote stable output mismatch; got >$OUTPUT< expected >$EXPECTED_OUTPUT<"
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 3b: nvm_ls_remote stable expected 1 download, got $(get_download_count)"
+
+# --- Test 4: LTS filtering reuses cache ---
+
+rm -rf "$(nvm_cache_dir)/index_tab"
+reset_download_count
+
+OUTPUT_LTS="$(NVM_LTS='*' nvm_ls_remote)"
+EXPECTED_LTS="$(cat "$MOCKS_DIR/nvm_ls_remote LTS.txt")"
+[ "_$OUTPUT_LTS" = "_$EXPECTED_LTS" ] \
+  || die "Test 4a: NVM_LTS='*' output mismatch"
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 4b: expected 1 download after LTS='*', got $(get_download_count)"
+
+OUTPUT_ARGON="$(NVM_LTS=argon nvm_ls_remote)"
+EXPECTED_ARGON="$(cat "$MOCKS_DIR/nvm_ls_remote LTS argon.txt")"
+[ "_$OUTPUT_ARGON" = "_$EXPECTED_ARGON" ] \
+  || die "Test 4c: NVM_LTS=argon output mismatch"
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 4d: expected still 1 download after LTS=argon cache hit, got $(get_download_count)"
+
+# --- Test 5: nvm cache clear invalidates index_tab cache ---
+
+rm -rf "$(nvm_cache_dir)/index_tab"
+reset_download_count
+
+nvm_ls_remote >/dev/null
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 5a: expected 1 download before cache clear, got $(get_download_count)"
+
+# Simulate nvm cache clear (rm -rf the cache dir)
+rm -rf "$(nvm_cache_dir)"
+
+nvm_ls_remote >/dev/null
+[ "$(get_download_count)" = "2" ] \
+  || die "Test 5b: expected 2 downloads after cache clear, got $(get_download_count)"
+
+# --- Test 6: Version filtering with pattern still works ---
+
+rm -rf "$(nvm_cache_dir)/index_tab"
+reset_download_count
+
+OUTPUT="$(nvm_ls_remote 0.3)"
+EXPECTED_OUTPUT="v0.3.0
+v0.3.1
+v0.3.2
+v0.3.3
+v0.3.4
+v0.3.5
+v0.3.6
+v0.3.7
+v0.3.8"
+[ "_$OUTPUT" = "_$EXPECTED_OUTPUT" ] \
+  || die "Test 6a: nvm_ls_remote 0.3 pattern filter mismatch; got $OUTPUT"
+
+OUTPUT="$(nvm_ls_remote 0.3.)"
+[ "_$OUTPUT" = "_$EXPECTED_OUTPUT" ] \
+  || die "Test 6b: nvm_ls_remote 0.3. trailing dot filter mismatch; got $OUTPUT"
+
+# Both calls should reuse cache from first download
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 6c: expected 1 download for pattern tests, got $(get_download_count)"
+
+# --- Test 7: LTS alias creation still works correctly ---
+
+rm -rf "$(nvm_cache_dir)/index_tab"
+ALIAS_COUNT_FILE="$TEST_WORK_DIR/alias_count.txt"
+echo 0 > "$ALIAS_COUNT_FILE"
+ALIAS_ARGS_FILE="$TEST_WORK_DIR/alias_args.txt"
+: > "$ALIAS_ARGS_FILE"
+
+nvm_make_alias() {
+  local count
+  count="$(cat "$ALIAS_COUNT_FILE")"
+  count="$((count + 1))"
+  echo "$count" > "$ALIAS_COUNT_FILE"
+  echo "${1}|${2}" >> "$ALIAS_ARGS_FILE"
+}
+
+nvm_ls_remote >/dev/null || die "Test 7a: nvm_ls_remote failed"
+
+ALIAS_COUNT="$(cat "$ALIAS_COUNT_FILE")"
+LTS_LINES="$(wc -l < "${MOCKS_DIR}/LTS_names.txt")"
+EXPECTED_COUNT="$((LTS_LINES + 1))"
+[ "$ALIAS_COUNT" = "$EXPECTED_COUNT" ] \
+  || die "Test 7b: nvm_make_alias called $ALIAS_COUNT times; expected $EXPECTED_COUNT"
+
+ALIAS_ARGS="$(cat "$ALIAS_ARGS_FILE")"
+EXPECTED_ALIAS_ARGS="$(cat "$MOCKS_DIR/nvm_make_alias LTS alias calls.txt")"
+[ "_$ALIAS_ARGS" = "_$EXPECTED_ALIAS_ARGS" ] \
+  || die "Test 7c: alias args mismatch; got >$ALIAS_ARGS< expected >$EXPECTED_ALIAS_ARGS<"
+
+unset -f nvm_make_alias
+
+# --- Test 8: Nightly builds work with caching ---
+
+rm -rf "$(nvm_cache_dir)/index_tab"
+reset_download_count
+nvm_download() {
+  local count
+  count="$(cat "$DOWNLOAD_COUNT_FILE")"
+  count="$((count + 1))"
+  echo "$count" > "$DOWNLOAD_COUNT_FILE"
+  cat "$NIGHTLY_TAB_PATH"
+}
+
+OUTPUT="$(nvm_ls_remote)"
+EXPECTED_OUTPUT="$(cat "$MOCKS_DIR/nvm_ls_remote nightly.txt")"
+[ "_$OUTPUT" = "_$EXPECTED_OUTPUT" ] \
+  || die "Test 8a: nightly output mismatch"
+
+OUTPUT_LTS="$(NVM_LTS='*' nvm_ls_remote)"
+EXPECTED_LTS="$(cat "$MOCKS_DIR/nvm_ls_remote LTS nightly.txt")"
+[ "_$OUTPUT_LTS" = "_$EXPECTED_LTS" ] \
+  || die "Test 8b: nightly LTS output mismatch"
+
+# Second call should hit cache
+[ "$(get_download_count)" = "1" ] \
+  || die "Test 8c: expected 1 download for nightly tests, got $(get_download_count)"
+
+cleanup
