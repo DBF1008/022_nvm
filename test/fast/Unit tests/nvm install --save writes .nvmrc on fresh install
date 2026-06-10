@@ -1,0 +1,85 @@
+#!/bin/sh
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+set -e
+
+TEST_VERSION='v0.2.4'
+
+if [ -f .nvmrc ]; then mv .nvmrc .nvmrc.orig; fi
+
+cleanup() {
+  rm -f "${HOOK_SCRIPT-}"
+  nvm cache clear
+  nvm deactivate
+  nvm unalias default 2>/dev/null || true
+  rm -rf "${NVM_DIR}/v0.2.4" .nvmrc
+  if [ -f .nvmrc.orig ]; then mv .nvmrc.orig .nvmrc; fi
+  unset -f nvm_ls_remote nvm_ls_remote_iojs
+  unset NVM_INSTALL_THIRD_PARTY_HOOK
+}
+
+die() {
+  echo "$@"
+  cleanup
+  exit 1
+}
+
+REMOTE="${PWD}/mocks/nvm_ls_remote.txt"
+nvm_ls_remote() {
+  if [ -n "${PATTERN}" ]; then
+    cat "${REMOTE}" | \grep "${PATTERN}"
+  else
+    cat "${REMOTE}"
+  fi
+}
+REMOTE_IOJS="$PWD/mocks/nvm_ls_remote_iojs.txt"
+nvm_ls_remote_iojs() {
+  local PATTERN
+  PATTERN="${1-}"
+  if [ -n "${PATTERN}" ]; then
+    cat "${REMOTE_IOJS}" | \grep "${PATTERN}"
+  else
+    cat "${REMOTE_IOJS}"
+  fi
+}
+
+# Create a third-party install hook that fakes node installation
+HOOK_SCRIPT="$(command mktemp)"
+cat > "${HOOK_SCRIPT}" <<'HOOKEOF'
+#!/bin/sh
+VERSION_PATH="$5"
+mkdir -p "${VERSION_PATH}/bin"
+printf '#!/bin/sh\necho "%s"\n' "$1" > "${VERSION_PATH}/bin/node"
+chmod +x "${VERSION_PATH}/bin/node"
+HOOKEOF
+chmod +x "${HOOK_SCRIPT}"
+export NVM_INSTALL_THIRD_PARTY_HOOK="${HOOK_SCRIPT}"
+
+# Ensure version is NOT installed (fresh install path)
+rm -rf "${NVM_DIR}/${TEST_VERSION}"
+rm -f .nvmrc
+
+# 1. nvm install --save on a fresh install should write .nvmrc
+nvm install --save "${TEST_VERSION}" 2>/dev/null || die "\`nvm install --save ${TEST_VERSION}\` failed on fresh install"
+
+[ -f .nvmrc ] || die "expected .nvmrc to be created after fresh install with --save"
+
+OUTPUT="$(cat .nvmrc)"
+nvm_is_valid_version "${OUTPUT}" \
+  || die "\`nvm install --save ${TEST_VERSION}\` wrote invalid version to .nvmrc: got '${OUTPUT}'"
+
+# 2. Also test with -w flag
+rm -f .nvmrc
+rm -rf "${NVM_DIR}/${TEST_VERSION}"
+
+nvm install -w "${TEST_VERSION}" 2>/dev/null || die "\`nvm install -w ${TEST_VERSION}\` failed on fresh install"
+
+[ -f .nvmrc ] || die "expected .nvmrc to be created after fresh install with -w"
+
+OUTPUT="$(cat .nvmrc)"
+nvm_is_valid_version "${OUTPUT}" \
+  || die "\`nvm install -w ${TEST_VERSION}\` wrote invalid version to .nvmrc: got '${OUTPUT}'"
+
+cleanup

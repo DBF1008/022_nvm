@@ -1,0 +1,81 @@
+#!/bin/sh
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+set -e
+
+TEST_VERSION="v0.2.4"
+
+if [ -f .nvmrc ]; then mv .nvmrc .nvmrc.orig; fi
+if [ -f ../.nvmrc ]; then mv ../.nvmrc ../.nvmrc.orig; fi
+
+del_nvmrc () {
+  rm -f .nvmrc ../.nvmrc
+}
+
+cleanup () {
+  del_nvmrc
+  nvm cache clear
+  nvm deactivate
+  nvm unalias default 2>/dev/null || true
+  rm -rf ${NVM_DIR}/v*
+  if [ -f .nvmrc.orig ]; then mv .nvmrc.orig .nvmrc; fi
+  if [ -f ../.nvmrc.orig ]; then mv ../.nvmrc.orig ../.nvmrc; fi
+  unset -f nvm_ls_remote nvm_ls_remote_iojs
+}
+
+die () {
+  echo "$@"
+  cleanup
+  exit 1
+}
+
+REMOTE="$PWD/mocks/nvm_ls_remote.txt"
+nvm_ls_remote() {
+  cat "$REMOTE"
+}
+REMOTE_IOJS="$PWD/mocks/nvm_ls_remote_iojs.txt"
+nvm_ls_remote_iojs() {
+  cat "$REMOTE_IOJS"
+}
+
+del_nvmrc
+make_fake_node "$TEST_VERSION"
+
+# 1. Test with \r\n line endings in parent .nvmrc
+printf "${TEST_VERSION}\r\n" > ../.nvmrc
+
+nvm use --save || die "\`nvm use --save\` with CR in parent .nvmrc failed"
+
+[ -f ../.nvmrc ] || die "expected parent .nvmrc to exist after --save with CR content"
+
+PARENT_OUTPUT=$(cat ../.nvmrc)
+nvm_is_valid_version "${PARENT_OUTPUT}" \
+  || die "parent .nvmrc contains invalid version after CR fix: got '${PARENT_OUTPUT}'"
+
+# Verify no CR in rewritten file
+if command printf '%s' "${PARENT_OUTPUT}" | command grep -q $'\r' 2>/dev/null; then
+  die "rewritten .nvmrc still contains carriage return"
+fi
+
+# 2. Test with \r only (no trailing \n) in .nvmrc
+del_nvmrc
+printf "${TEST_VERSION}\r" > ../.nvmrc
+
+nvm use --save || die "\`nvm use --save\` with bare CR in .nvmrc failed"
+
+PARENT_OUTPUT=$(cat ../.nvmrc)
+nvm_is_valid_version "${PARENT_OUTPUT}" \
+  || die "parent .nvmrc contains invalid version after bare CR fix: got '${PARENT_OUTPUT}'"
+
+# 3. Verify round-trip consistency: write then re-read
+del_nvmrc
+nvm use --save "$TEST_VERSION" || die "\`nvm use --save $TEST_VERSION\` failed for round-trip test"
+
+WRITTEN=$(cat .nvmrc)
+REREAD="$(NVM_SILENT=1 nvm_rc_version 3>&1 1>/dev/null)"
+[ "_${WRITTEN}" = "_${REREAD}" ] \
+  || die "round-trip inconsistency: written='${WRITTEN}', re-read='${REREAD}'"
+
+cleanup

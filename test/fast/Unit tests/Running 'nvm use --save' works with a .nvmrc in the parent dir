@@ -43,16 +43,35 @@ nvm_ls_remote_iojs() {
 del_nvmrc
 make_fake_node "$TEST_VERSION"
 
+# 1. Create .nvmrc in parent dir with explicit version
 (cd ..
 nvm use --save "$TEST_VERSION" || die "\`nvm use --save $TEST_VERSION\` failed in the parent dir")
+
+[ -f ../.nvmrc ] || die "expected parent .nvmrc to be created"
+
+# 2. nvm use --save (no version, reads parent .nvmrc) should update parent, not create child
 nvm use --save || die "\`nvm use --save\` failed"
 
-[ -f ../.nvmrc ] && [ -f .nvmrc ] || die "expected two .nvmrc files to be generated"
+[ -f ../.nvmrc ] || die "expected parent .nvmrc to still exist"
+[ ! -f .nvmrc ] || die "expected no .nvmrc in child dir when version came from parent"
 
-OUTPUT=$(cat .nvmrc)
-EXPECTED_OUTPUT="$(cat ../.nvmrc)"
+PARENT_OUTPUT=$(cat ../.nvmrc)
+nvm_is_valid_version "${PARENT_OUTPUT}" \
+  || die "parent .nvmrc contains invalid version: got '${PARENT_OUTPUT}'"
 
-[ "_$OUTPUT" = "_$EXPECTED_OUTPUT" ] \
-  || die "invalid \`nvm use --save \` output: expected '$EXPECTED_OUTPUT'; got '$OUTPUT'"
+# 3. nvm use --save with explicit version should write to $PWD (child dir)
+del_nvmrc
+(cd ..
+nvm use --save "$TEST_VERSION" || die "\`nvm use --save $TEST_VERSION\` failed in the parent dir (round 2)")
+
+nvm use --save "$TEST_VERSION" || die "\`nvm use --save $TEST_VERSION\` failed in child dir"
+
+[ -f ../.nvmrc ] || die "expected parent .nvmrc to still exist (round 2)"
+[ -f .nvmrc ] || die "expected child .nvmrc to be created with explicit version"
+
+CHILD_OUTPUT=$(cat .nvmrc)
+PARENT_OUTPUT=$(cat ../.nvmrc)
+[ "_$CHILD_OUTPUT" = "_$PARENT_OUTPUT" ] \
+  || die "child and parent .nvmrc should match: child='$CHILD_OUTPUT', parent='$PARENT_OUTPUT'"
 
 cleanup

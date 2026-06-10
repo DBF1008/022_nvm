@@ -1,0 +1,72 @@
+#!/bin/sh
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+set -e
+
+TEST_VERSION="v0.2.4"
+
+if [ -f .nvmrc ]; then mv .nvmrc .nvmrc.orig; fi
+if [ -f ../.nvmrc ]; then mv ../.nvmrc ../.nvmrc.orig; fi
+
+del_nvmrc () {
+  rm -f .nvmrc ../.nvmrc
+}
+
+cleanup () {
+  del_nvmrc
+  nvm cache clear
+  nvm deactivate
+  nvm unalias default 2>/dev/null || true
+  rm -rf ${NVM_DIR}/v*
+  if [ -f .nvmrc.orig ]; then mv .nvmrc.orig .nvmrc; fi
+  if [ -f ../.nvmrc.orig ]; then mv ../.nvmrc.orig ../.nvmrc; fi
+  unset -f nvm_ls_remote nvm_ls_remote_iojs
+}
+
+die () {
+  echo "$@"
+  cleanup
+  exit 1
+}
+
+REMOTE="$PWD/mocks/nvm_ls_remote.txt"
+nvm_ls_remote() {
+  cat "$REMOTE"
+}
+REMOTE_IOJS="$PWD/mocks/nvm_ls_remote_iojs.txt"
+nvm_ls_remote_iojs() {
+  cat "$REMOTE_IOJS"
+}
+
+del_nvmrc
+make_fake_node "$TEST_VERSION"
+
+# Create .nvmrc in parent dir
+printf "${TEST_VERSION}\n" > ../.nvmrc
+
+# 1. nvm use --silent --save with version from parent .nvmrc should produce no output
+OUTPUT=$(nvm use --save --silent 2>&1 || die "\`nvm use --save --silent\` failed with .nvmrc in parent dir")
+EXPECTED_OUTPUT=''
+
+[ "_${OUTPUT}" = "_${EXPECTED_OUTPUT}" ] \
+  || die "\`nvm use --save --silent\` was not silent when reading parent .nvmrc: got '${OUTPUT}'"
+
+# 2. Verify .nvmrc was still updated despite silence
+[ -f ../.nvmrc ] || die "expected parent .nvmrc to exist after silent --save"
+
+PARENT_OUTPUT=$(cat ../.nvmrc)
+nvm_is_valid_version "${PARENT_OUTPUT}" \
+  || die "parent .nvmrc contains invalid version after silent --save: got '${PARENT_OUTPUT}'"
+
+# 3. nvm use --silent --save with explicit version should also be silent
+del_nvmrc
+OUTPUT=$(nvm use --save --silent "${TEST_VERSION}" 2>&1 || die "\`nvm use --save --silent ${TEST_VERSION}\` failed")
+
+[ "_${OUTPUT}" = "_${EXPECTED_OUTPUT}" ] \
+  || die "\`nvm use --save --silent ${TEST_VERSION}\` was not silent: got '${OUTPUT}'"
+
+[ -f .nvmrc ] || die "expected .nvmrc in current dir after explicit version --save"
+
+cleanup

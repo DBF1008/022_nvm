@@ -3066,14 +3066,16 @@ nvm_write_nvmrc() {
   if [ "${VERSION_STRING}" = '∞' ] || [ "${VERSION_STRING}" = 'N/A' ]; then
     return 1
   fi
-  echo "${VERSION_STRING}" | tee "$PWD"/.nvmrc > /dev/null || {
+  local TARGET_DIR
+  TARGET_DIR="${2:-$PWD}"
+  nvm_echo "${VERSION_STRING}" | tee "${TARGET_DIR}"/.nvmrc > /dev/null || {
     if [ "${NVM_SILENT:-0}" -ne 1 ]; then
-      nvm_err "Warning: Unable to write version number ($VERSION_STRING) to .nvmrc"
+      nvm_err "Warning: Unable to write version number ($VERSION_STRING) to ${TARGET_DIR}/.nvmrc"
     fi
     return 3
   }
   if [ "${NVM_SILENT:-0}" -ne 1 ]; then
-    nvm_echo "Wrote version number ($VERSION_STRING) to .nvmrc"
+    nvm_echo "Wrote version number ($VERSION_STRING) to ${TARGET_DIR}/.nvmrc"
   fi
 }
 
@@ -3456,6 +3458,8 @@ nvm() {
       NVM_UPGRADE_NPM=0
       local NVM_WRITE_TO_NVMRC
       NVM_WRITE_TO_NVMRC=0
+      local NVMRC_WRITE_PATH
+      NVMRC_WRITE_PATH=''
 
       local PROVIDED_REINSTALL_PACKAGES_FROM
       local REINSTALL_PACKAGES_FROM
@@ -3593,6 +3597,13 @@ nvm() {
           fi
         else
           { provided_version="$(nvm_rc_version 3>&1 1>&4)"; } 4>&1
+          if [ -n "${provided_version}" ]; then
+            local NVMRC_FOUND
+            NVMRC_FOUND="$(nvm_find_nvmrc)"
+            if [ -n "${NVMRC_FOUND}" ]; then
+              NVMRC_WRITE_PATH="$(command dirname "${NVMRC_FOUND}")"
+            fi
+          fi
           if [ $version_not_provided -eq 1 ] && [ -z "${provided_version}" ]; then
             >&2 nvm --help
             return 127
@@ -3749,7 +3760,11 @@ nvm() {
         fi
 
         if [ $NVM_WRITE_TO_NVMRC -eq 1 ]; then
-          nvm_write_nvmrc "${VERSION}"
+          if [ -n "${NVMRC_WRITE_PATH}" ]; then
+            nvm_write_nvmrc "${VERSION}" "${NVMRC_WRITE_PATH}"
+          else
+            nvm_write_nvmrc "${VERSION}"
+          fi
           EXIT_CODE=$?
         fi
 
@@ -3831,6 +3846,13 @@ nvm() {
             nvm_ensure_default_set "lts/${LTS}"
           else
             nvm_ensure_default_set "${provided_version}"
+          fi
+          if [ $NVM_WRITE_TO_NVMRC -eq 1 ]; then
+            if [ -n "${NVMRC_WRITE_PATH}" ]; then
+              nvm_write_nvmrc "${VERSION}" "${NVMRC_WRITE_PATH}"
+            else
+              nvm_write_nvmrc "${VERSION}"
+            fi
           fi
           if [ "${NVM_UPGRADE_NPM}" = 1 ]; then
             nvm install-latest-npm
@@ -4046,7 +4068,17 @@ nvm() {
       fi
 
       if [ $NVM_WRITE_TO_NVMRC -eq 1 ]; then
-        nvm_write_nvmrc "${VERSION}"
+        if [ "${IS_VERSION_FROM_NVMRC}" = '1' ]; then
+          local NVMRC_PATH
+          NVMRC_PATH="$(nvm_find_nvmrc)"
+          if [ -n "${NVMRC_PATH}" ]; then
+            nvm_write_nvmrc "${VERSION}" "$(command dirname "${NVMRC_PATH}")"
+          else
+            nvm_write_nvmrc "${VERSION}"
+          fi
+        else
+          nvm_write_nvmrc "${VERSION}"
+        fi
       fi
 
       if [ "_${VERSION}" = '_system' ]; then

@@ -1,0 +1,79 @@
+#!/bin/sh
+: nvm.sh
+\. ../../../nvm.sh
+\. ../../common.sh
+
+set -e
+
+TEST_VERSION="v0.2.4"
+
+if [ -f .nvmrc ]; then mv .nvmrc .nvmrc.orig; fi
+if [ -f ../.nvmrc ]; then mv ../.nvmrc ../.nvmrc.orig; fi
+
+del_nvmrc () {
+  rm -f .nvmrc ../.nvmrc
+}
+
+cleanup () {
+  del_nvmrc
+  nvm cache clear
+  nvm deactivate
+  nvm unalias default 2>/dev/null || true
+  rm -rf ${NVM_DIR}/v*
+  if [ -f .nvmrc.orig ]; then mv .nvmrc.orig .nvmrc; fi
+  if [ -f ../.nvmrc.orig ]; then mv ../.nvmrc.orig ../.nvmrc; fi
+  unset -f nvm_ls_remote nvm_ls_remote_iojs
+}
+
+die () {
+  echo "$@"
+  cleanup
+  exit 1
+}
+
+REMOTE="$PWD/mocks/nvm_ls_remote.txt"
+nvm_ls_remote() {
+  cat "$REMOTE"
+}
+REMOTE_IOJS="$PWD/mocks/nvm_ls_remote_iojs.txt"
+nvm_ls_remote_iojs() {
+  cat "$REMOTE_IOJS"
+}
+
+del_nvmrc
+make_fake_node "$TEST_VERSION"
+
+# 1. Test with 'default' alias in .nvmrc
+nvm alias default "$TEST_VERSION"
+printf 'default\n' > ../.nvmrc
+
+nvm use --save || die "\`nvm use --save\` with 'default' in parent .nvmrc failed"
+
+[ -f ../.nvmrc ] || die "expected parent .nvmrc to exist after --save with default alias"
+PARENT_OUTPUT=$(cat ../.nvmrc)
+nvm_is_valid_version "${PARENT_OUTPUT}" \
+  || die "parent .nvmrc contains invalid version after default alias: got '${PARENT_OUTPUT}'"
+
+# Verify the resolved version is written, not the alias name
+[ "_${PARENT_OUTPUT}" != '_default' ] \
+  || die "expected resolved version in .nvmrc, not alias name 'default'"
+
+# 2. Verify re-reading produces the same version
+REREAD_VERSION="$(nvm_version "${PARENT_OUTPUT}")"
+[ "_${REREAD_VERSION}" = "_${PARENT_OUTPUT}" ] \
+  || die "re-reading .nvmrc produced inconsistent version: wrote '${PARENT_OUTPUT}', re-read '${REREAD_VERSION}'"
+
+# 3. Test with 'system' in .nvmrc (only if system node exists)
+del_nvmrc
+if nvm_has_system_node; then
+  printf 'system\n' > ../.nvmrc
+
+  nvm use --save || die "\`nvm use --save\` with 'system' in parent .nvmrc failed"
+
+  [ -f ../.nvmrc ] || die "expected parent .nvmrc to exist after --save with system"
+  PARENT_OUTPUT=$(cat ../.nvmrc)
+  [ "_${PARENT_OUTPUT}" = '_system' ] \
+    || die "expected 'system' in .nvmrc after --save with system, got '${PARENT_OUTPUT}'"
+fi
+
+cleanup
