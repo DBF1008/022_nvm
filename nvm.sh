@@ -3233,6 +3233,7 @@ nvm() {
         nvm_echo '    --latest-npm                              After installing, attempt to upgrade to the latest working npm on the given node version'
         nvm_echo '    --no-progress                             Disable the progress bar on any downloads'
         nvm_echo '    --offline                                 Install from cache only, without downloading anything'
+        nvm_echo '    --dry-run                                 Show what would be installed, without actually installing'
         nvm_echo '    --alias=<name>                            After installing, set the alias specified to the version specified. (same as: nvm alias <name> <version>)'
         nvm_echo '    --default                                 After installing, set default alias to the version specified. (same as: nvm alias default <version>)'
         nvm_echo '    --save                                    After installing, write the specified version to .nvmrc'
@@ -3450,6 +3451,8 @@ nvm() {
       noprogress=0
       nosource=0
       NVM_OFFLINE=0
+      local NVM_DRY_RUN
+      NVM_DRY_RUN=0
       local LTS
       local ALIAS
       local NVM_UPGRADE_NPM
@@ -3494,6 +3497,10 @@ nvm() {
           ;;
           --offline)
             NVM_OFFLINE=1
+            shift
+          ;;
+          --dry-run)
+            NVM_DRY_RUN=1
             shift
           ;;
           --lts)
@@ -3572,7 +3579,7 @@ nvm() {
         esac
       done
 
-      if [ "${NVM_OFFLINE}" != 1 ] && ! nvm_has "curl" && ! nvm_has "wget"; then
+      if [ "${NVM_OFFLINE}" != 1 ] && [ "${NVM_DRY_RUN}" != 1 ] && ! nvm_has "curl" && ! nvm_has "wget"; then
         nvm_err 'nvm needs curl or wget to proceed.'
         return 1
       fi
@@ -3719,6 +3726,78 @@ nvm() {
         FLAVOR="$(nvm_iojs_prefix)"
       else
         FLAVOR="$(nvm_node_prefix)"
+      fi
+
+      if [ "${NVM_DRY_RUN}" = 1 ]; then
+        local NVM_DRY_RUN_ARCH
+        NVM_DRY_RUN_ARCH="$(nvm_get_arch)"
+
+        local NVM_DRY_RUN_MIRROR
+        NVM_DRY_RUN_MIRROR="$(nvm_get_mirror "${FLAVOR}" std)"
+
+        local NVM_DRY_RUN_INSTALLED
+        NVM_DRY_RUN_INSTALLED='no'
+        if nvm_is_version_installed "${VERSION}"; then
+          NVM_DRY_RUN_INSTALLED='yes'
+        fi
+
+        # Determine install method using the same logic as the real install path
+        local NVM_DRY_RUN_METHOD
+        if [ $nobinary -eq 1 ]; then
+          NVM_DRY_RUN_METHOD='source'
+        elif [ "_${NVM_OS}" = "_freebsd" ]; then
+          NVM_DRY_RUN_METHOD='source'
+        elif [ "_${NVM_OS}" = "_openbsd" ]; then
+          NVM_DRY_RUN_METHOD='source'
+        elif [ "_${NVM_OS}" = "_sunos" ] && ! nvm_has_solaris_binary "${VERSION}"; then
+          NVM_DRY_RUN_METHOD='source'
+        elif [ $nosource -eq 1 ]; then
+          NVM_DRY_RUN_METHOD='binary'
+        elif nvm_binary_available "${VERSION}"; then
+          NVM_DRY_RUN_METHOD='binary'
+        else
+          NVM_DRY_RUN_METHOD='source'
+        fi
+
+        local NVM_DRY_RUN_SLUG
+        NVM_DRY_RUN_SLUG="$(nvm_get_download_slug "${FLAVOR}" "${NVM_DRY_RUN_METHOD}" "${VERSION}")"
+
+        local NVM_DRY_RUN_COMPRESSION
+        NVM_DRY_RUN_COMPRESSION="$(nvm_get_artifact_compression "${VERSION}")"
+
+        local NVM_DRY_RUN_URL
+        if nvm_version_greater_than_or_equal_to "${VERSION}" 0.1.14; then
+          NVM_DRY_RUN_URL="${NVM_DRY_RUN_MIRROR}/${VERSION}/${NVM_DRY_RUN_SLUG}.${NVM_DRY_RUN_COMPRESSION}"
+        else
+          NVM_DRY_RUN_URL="${NVM_DRY_RUN_MIRROR}/${NVM_DRY_RUN_SLUG}.${NVM_DRY_RUN_COMPRESSION}"
+        fi
+
+        local NVM_DRY_RUN_CHECKSUM_URL
+        NVM_DRY_RUN_CHECKSUM_URL="${NVM_DRY_RUN_MIRROR}/${VERSION}/SHASUMS256.txt"
+
+        local NVM_DRY_RUN_AUTH
+        NVM_DRY_RUN_AUTH='<none>'
+        if [ -n "${NVM_AUTH_HEADER-}" ]; then
+          NVM_DRY_RUN_AUTH='<set>'
+        fi
+
+        local NVM_DRY_RUN_REINSTALL
+        NVM_DRY_RUN_REINSTALL='<none>'
+        if [ -n "${REINSTALL_PACKAGES_FROM-}" ] && [ "_${REINSTALL_PACKAGES_FROM}" != "_N/A" ]; then
+          NVM_DRY_RUN_REINSTALL="from ${REINSTALL_PACKAGES_FROM}"
+        fi
+
+        nvm_echo "Version:              ${VERSION}"
+        nvm_echo "Install method:       ${NVM_DRY_RUN_METHOD}"
+        nvm_echo "Architecture:         ${NVM_DRY_RUN_ARCH}"
+        nvm_echo "OS:                   ${NVM_OS}"
+        nvm_echo "Mirror:               ${NVM_DRY_RUN_MIRROR}"
+        nvm_echo "Download URL:         ${NVM_DRY_RUN_URL}"
+        nvm_echo "Checksum URL:         ${NVM_DRY_RUN_CHECKSUM_URL}"
+        nvm_echo "Auth:                 ${NVM_DRY_RUN_AUTH}"
+        nvm_echo "Already installed:    ${NVM_DRY_RUN_INSTALLED}"
+        nvm_echo "Reinstall packages:   ${NVM_DRY_RUN_REINSTALL}"
+        return 0
       fi
 
       EXIT_CODE=0

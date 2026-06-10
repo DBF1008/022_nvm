@@ -1,0 +1,183 @@
+#!/bin/sh
+
+set -ex
+
+cleanup() {
+  unset -f nvm_get_os 2>/dev/null
+  unset -f nvm_get_arch 2>/dev/null
+  unset -f nvm_remote_version 2>/dev/null
+  unset -f nvm_supports_xz 2>/dev/null
+  unset -f nvm_binary_available 2>/dev/null
+  unset -f nvm_has_solaris_binary 2>/dev/null
+  unset NVM_NODEJS_ORG_MIRROR 2>/dev/null
+  unset NVM_AUTH_HEADER 2>/dev/null
+  rm -rf "${NVM_DIR}/v0.0.1" "${NVM_DIR}/v0.0.2" "${NVM_DIR}/v99.99.99" 2>/dev/null
+  nvm unalias test-dry-run-alias 2>/dev/null
+  nvm unalias default 2>/dev/null
+}
+
+die () { echo "$@" ; cleanup; exit 1; }
+
+\. ../../../nvm.sh
+
+\. ../../common.sh
+
+# Common mocks for deterministic output
+setup_mocks() {
+  nvm_remote_version() { nvm_echo "v20.11.0"; }
+  nvm_get_os() { nvm_echo "darwin"; }
+  nvm_get_arch() { nvm_echo "arm64"; }
+  nvm_supports_xz() { return 0; }
+  nvm_binary_available() { return 0; }
+}
+
+setup_mocks
+
+# Test 1: Basic dry-run output format - all key-value lines present
+try nvm install --dry-run v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 1: expected exit code 0, got $CAPTURED_EXIT_CODE"
+
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Version:" \
+  || die "Test 1: output missing Version line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Install method:" \
+  || die "Test 1: output missing Install method line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Architecture:" \
+  || die "Test 1: output missing Architecture line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^OS:" \
+  || die "Test 1: output missing OS line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Mirror:" \
+  || die "Test 1: output missing Mirror line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Download URL:" \
+  || die "Test 1: output missing Download URL line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Checksum URL:" \
+  || die "Test 1: output missing Checksum URL line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Auth:" \
+  || die "Test 1: output missing Auth line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Already installed:" \
+  || die "Test 1: output missing Already installed line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Reinstall packages:" \
+  || die "Test 1: output missing Reinstall packages line"
+
+# Test 2: LTS version resolution
+nvm_remote_version() { nvm_echo "v20.11.0"; }
+try nvm install --dry-run --lts
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 2: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Version:.*v20.11.0" \
+  || die "Test 2: LTS did not resolve to expected version"
+
+# Test 3: Custom mirror display
+setup_mocks
+NVM_NODEJS_ORG_MIRROR="https://my-private-mirror.example.com/dist"
+try nvm install --dry-run v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 3: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Mirror:.*https://my-private-mirror.example.com/dist" \
+  || die "Test 3: custom mirror not shown in Mirror line"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Download URL:.*https://my-private-mirror.example.com/dist/" \
+  || die "Test 3: custom mirror not shown in Download URL"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Checksum URL:.*https://my-private-mirror.example.com/dist/" \
+  || die "Test 3: custom mirror not shown in Checksum URL"
+unset NVM_NODEJS_ORG_MIRROR
+
+# Test 4: Auth header routing info
+setup_mocks
+NVM_AUTH_HEADER="Bearer mytoken123"
+try nvm install --dry-run v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 4: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Auth:.*<set>" \
+  || die "Test 4: auth header not shown as <set>"
+unset NVM_AUTH_HEADER
+
+# Verify auth shows <none> when not set
+try nvm install --dry-run v20.11.0
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Auth:.*<none>" \
+  || die "Test 4b: auth should show <none> when NVM_AUTH_HEADER is unset"
+
+# Test 5: --reinstall-packages-from display
+setup_mocks
+make_fake_node v0.0.1
+try nvm install --dry-run --reinstall-packages-from=v0.0.1 v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 5: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Reinstall packages:.*from v0.0.1" \
+  || die "Test 5: reinstall packages source not shown"
+
+# Verify <none> when --reinstall-packages-from not used
+try nvm install --dry-run v20.11.0
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Reinstall packages:.*<none>" \
+  || die "Test 5b: reinstall packages should show <none> when not specified"
+
+# Test 6: -s (source only) mode
+setup_mocks
+try nvm install --dry-run -s v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 6: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Install method:.*source" \
+  || die "Test 6: -s did not set install method to source"
+
+# Test 7: -b (binary only) mode
+setup_mocks
+try nvm install --dry-run -b v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 7: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Install method:.*binary" \
+  || die "Test 7: -b did not set install method to binary"
+
+# Test 8: Already installed version
+setup_mocks
+make_fake_node v0.0.2
+nvm_remote_version() { nvm_echo "v0.0.2"; }
+try nvm install --dry-run v0.0.2
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 8: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Already installed:.*yes" \
+  || die "Test 8: already-installed version not detected"
+
+# Test 9: Dry-run does NOT actually install
+setup_mocks
+nvm_remote_version() { nvm_echo "v99.99.99"; }
+try nvm install --dry-run v99.99.99
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 9: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_is_version_installed v99.99.99 \
+  && die "Test 9: dry-run should not actually install the version"
+
+# Test 10: Combination --dry-run --lts --reinstall-packages-from
+setup_mocks
+make_fake_node v0.0.1
+nvm_remote_version() { nvm_echo "v20.11.0"; }
+try nvm install --dry-run --lts --reinstall-packages-from=v0.0.1 v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 10: combination failed with exit code $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Version:.*v20.11.0" \
+  || die "Test 10: missing Version in combination"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Reinstall packages:.*from v0.0.1" \
+  || die "Test 10: missing reinstall info in combination"
+
+# Test 11: Alias resolution
+setup_mocks
+make_fake_node v0.0.2
+nvm alias test-dry-run-alias v0.0.2
+nvm_remote_version() { nvm_echo "v0.0.2"; }
+try nvm install --dry-run test-dry-run-alias
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 11: alias resolution failed with exit code $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Version:.*v0.0.2" \
+  || die "Test 11: alias did not resolve to expected version"
+nvm unalias test-dry-run-alias
+
+# Test 12: Download URL format
+setup_mocks
+nvm_remote_version() { nvm_echo "v20.11.0"; }
+try nvm install --dry-run v20.11.0
+[ "_$CAPTURED_EXIT_CODE" = "_0" ] \
+  || die "Test 12: expected exit code 0, got $CAPTURED_EXIT_CODE"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Download URL:.*https://nodejs.org/dist/v20.11.0/node-v20.11.0-darwin-arm64.tar.xz" \
+  || die "Test 12: download URL format incorrect, got: $(nvm_echo "$CAPTURED_STDOUT" | nvm_grep "^Download URL:")"
+nvm_echo "$CAPTURED_STDOUT" | nvm_grep -q "^Checksum URL:.*https://nodejs.org/dist/v20.11.0/SHASUMS256.txt" \
+  || die "Test 12: checksum URL format incorrect"
+
+cleanup
