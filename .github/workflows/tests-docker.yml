@@ -1,4 +1,4 @@
-name: 'Tests: xenial'
+name: 'Tests: Docker'
 
 on: [push, pull_request]
 
@@ -6,11 +6,11 @@ permissions:
   contents: read
 
 jobs:
-  xenial:
+  docker:
     permissions:
       contents: read
 
-    name: 'xenial (${{ matrix.shell }})'
+    name: "${{ matrix.suite }} (${{ matrix.shell }}${{ matrix.without_curl == 'true' && ', without curl' || '' }})"
     runs-on: ubuntu-latest
 
     strategy:
@@ -22,6 +22,15 @@ jobs:
           - dash
           - zsh
           # - ksh
+        suite:
+          - installation_node
+          - xenial
+        without_curl:
+          - 'false'
+          - 'true'
+        exclude:
+          - suite: xenial
+            without_curl: 'true'
 
     steps:
       - name: Harden Runner
@@ -60,7 +69,7 @@ jobs:
           skip-ls-check: true
       - run: npm ls urchin
       - run: npx which urchin
-      - name: Run xenial tests in container
+      - name: Run tests in container
         run: |
           # Retry the image pull to tolerate transient Docker registry failures
           for i in 1 2 3 4 5; do
@@ -72,9 +81,11 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             -e "TEST_SHELL=${{ matrix.shell }}" \
+            -e "TEST_SUITE=${{ matrix.suite }}" \
             -e "TERM=xterm-256color" \
             -e "DEBIAN_FRONTEND=noninteractive" \
             -e "GITHUB_ACTIONS=true" \
+            -e "WITHOUT_CURL=${{ matrix.without_curl }}" \
             ubuntu:16.04 \
             bash -c '
               set -ex
@@ -106,6 +117,12 @@ jobs:
               npm ls urchin
               URCHIN_PATH="$(npx which urchin)"
 
+              # Remove curl if testing without it
+              if [ "$WITHOUT_CURL" = "true" ]; then
+                apt-get remove curl -y
+                ! command -v curl
+              fi
+
               # Now clean up nvm state for the actual tests, but keep NVM_DIR set
               nvm deactivate || true
               nvm unalias default || true
@@ -115,14 +132,14 @@ jobs:
               # Clean any cached files from the nvm install above
               rm -rf "$NVM_DIR/.cache" "$NVM_DIR/versions" "$NVM_DIR/alias"
 
-              make TEST_SUITE="xenial" SHELL="$TEST_SHELL" URCHIN="$URCHIN_PATH" test-$TEST_SHELL
+              make TEST_SUITE="$TEST_SUITE" SHELL="$TEST_SHELL" URCHIN="$URCHIN_PATH" test-$TEST_SHELL
             '
 
   all:
     permissions:
       contents: none
-    name: 'all xenial tests'
-    needs: [xenial]
+    name: 'all docker tests'
+    needs: [docker]
     runs-on: ubuntu-latest
     steps:
       - run: true

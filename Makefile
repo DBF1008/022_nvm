@@ -23,7 +23,7 @@ SHELLS := sh bash dash zsh # ksh (#574)
 SHELL_TARGETS := $(addprefix test-,$(SHELLS))
 	# Define the default test suite(s). This can be overridden with `make TEST_SUITE=<...>  <target>`.
 	# Test suites are the names of subfolders of './test'.
-TEST_SUITE := $(shell find ./test/* -type d -prune -exec basename {} \;)
+TEST_SUITE := fast install_script installation_iojs installation_node slow sourcing xenial
 
 
 # Default target (by virtue of being the first non '.'-prefixed in the file).
