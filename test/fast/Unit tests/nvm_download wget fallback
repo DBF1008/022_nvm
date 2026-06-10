@@ -1,0 +1,109 @@
+#!/bin/sh
+
+OLDPATH="$PATH"
+WORK="$PWD/nvm_download-fallback-work.$$"
+TEST_BIN="$WORK/bin"
+CURL_LOG="$WORK/curl.log"
+WGET_LOG="$WORK/wget.log"
+
+cleanup() {
+  unset -f die cleanup
+  rm -rf "$WORK"
+  export PATH="$OLDPATH"
+}
+die () { echo "$@" ; cleanup ; exit 1; }
+
+\. ../../../nvm.sh
+
+OLDPATH="$PATH"
+
+mkdir -p "$TEST_BIN"
+
+# fake curl: write a marker + args to its own log
+{
+  echo '#!/bin/sh'
+  echo ': > "$CURL_LOG"'
+  echo 'echo "CURL_CALLED" >> "$CURL_LOG"'
+  echo 'for a in "$@"; do printf "%s\n" "$a" >> "$CURL_LOG"; done'
+  echo 'exit 0'
+} > "$TEST_BIN/curl"
+chmod +x "$TEST_BIN/curl"
+
+# fake wget: write a marker + args to its own log
+{
+  echo '#!/bin/sh'
+  echo ': > "$WGET_LOG"'
+  echo 'echo "WGET_CALLED" >> "$WGET_LOG"'
+  echo 'for a in "$@"; do printf "%s\n" "$a" >> "$WGET_LOG"; done'
+  echo 'exit 0'
+} > "$TEST_BIN/wget"
+chmod +x "$TEST_BIN/wget"
+
+export CURL_LOG WGET_LOG
+export PATH="$TEST_BIN:$OLDPATH"
+
+# --- Test 1: curl is preferred when both are available ---
+rm -f "$CURL_LOG" "$WGET_LOG"
+nvm_download "https://example.test/file" -o - || die 'nvm_download returned nonzero when both available'
+[ -f "$CURL_LOG" ] || die "curl was not called when both downloaders are available"
+[ ! -f "$WGET_LOG" ] || die "wget was called even though curl is available"
+
+# --- Test 2: wget fallback when curl is removed ---
+rm -f "$TEST_BIN/curl" "$CURL_LOG" "$WGET_LOG"
+
+# run in subshell with restricted PATH so nvm_has cannot find system curl
+( PATH="$TEST_BIN"; export PATH; nvm_download "https://example.test/file" -o - ) || die 'nvm_download (wget) returned nonzero'
+[ -f "$WGET_LOG" ] || die "wget was not called when curl is missing"
+
+# --- Test 3: flag translation --progress-bar ---
+( PATH="$TEST_BIN"; export PATH; nvm_download --progress-bar "https://example.test/f" -o out ) || die 'wget flag test failed'
+grep -Fxqe '--progress=bar' "$WGET_LOG" || die "wget did not translate --progress-bar; got: $(cat "$WGET_LOG")"
+
+# --- Test 4: flag translation -s ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -s "https://example.test/f" -o out ) || die 'wget -s test failed'
+grep -Fxqe '-q' "$WGET_LOG" || die "wget did not translate -s to -q; got: $(cat "$WGET_LOG")"
+
+# --- Test 5: flag translation -sS ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -sS "https://example.test/f" -o out ) || die 'wget -sS test failed'
+grep -Fxqe '-nv' "$WGET_LOG" || die "wget did not translate -sS to -nv; got: $(cat "$WGET_LOG")"
+
+# --- Test 6: flag translation -o -> -O ---
+( PATH="$TEST_BIN"; export PATH; nvm_download "https://example.test/f" -o target ) || die 'wget -o test failed'
+grep -Fxqe '-O' "$WGET_LOG" || die "wget did not translate -o to -O; got: $(cat "$WGET_LOG")"
+
+# --- Test 7: flag translation -C - -> -c (consuming lone -) ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -C - "https://example.test/f" -o out ) || die 'wget -C test failed'
+grep -Fxqe '-c' "$WGET_LOG" || die "wget did not translate -C - to -c; got: $(cat "$WGET_LOG")"
+grep -Fxqe '-C' "$WGET_LOG" && die "wget should not pass -C through; got: $(cat "$WGET_LOG")"
+
+# --- Test 8: -L, --compressed, --fail are dropped ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -L --compressed --fail "https://example.test/f" -o out ) || die 'wget drop flags test failed'
+grep -Fxqe '-L' "$WGET_LOG" && die "wget should drop -L; got: $(cat "$WGET_LOG")"
+grep -Fxqe '--compressed' "$WGET_LOG" && die "wget should drop --compressed; got: $(cat "$WGET_LOG")"
+grep -Fxqe '--fail' "$WGET_LOG" && die "wget should drop --fail; got: $(cat "$WGET_LOG")"
+
+# --- Test 9: -I -> --server-response ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -I "https://example.test/f" -o out ) || die 'wget -I test failed'
+grep -Fxqe '--server-response' "$WGET_LOG" || die "wget did not translate -I to --server-response; got: $(cat "$WGET_LOG")"
+
+# --- Test 10: real nvm_download_artifact call signature: -L -C - --progress-bar URL -o FILE ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -L -C - --progress-bar "https://mirror.test/v20/node.tar.gz" -o "/tmp/node.tar.gz" ) || die 'wget artifact signature test failed'
+grep -Fxqe '-c' "$WGET_LOG" || die "artifact sig: -C - not translated to -c; got: $(cat "$WGET_LOG")"
+grep -Fxqe '--progress=bar' "$WGET_LOG" || die "artifact sig: --progress-bar not translated; got: $(cat "$WGET_LOG")"
+grep -Fxqe '-O' "$WGET_LOG" || die "artifact sig: -o not translated to -O; got: $(cat "$WGET_LOG")"
+grep -Fxqe '-L' "$WGET_LOG" && die "artifact sig: -L should be dropped; got: $(cat "$WGET_LOG")"
+
+# --- Test 11: real nvm_get_checksum call signature: -L -s URL -o - ---
+( PATH="$TEST_BIN"; export PATH; nvm_download -L -s "https://mirror.test/v20/SHASUMS256.txt" -o - ) || die 'wget checksum signature test failed'
+grep -Fxqe '-q' "$WGET_LOG" || die "checksum sig: -s not translated to -q; got: $(cat "$WGET_LOG")"
+grep -Fxqe '-O' "$WGET_LOG" || die "checksum sig: -o not translated to -O; got: $(cat "$WGET_LOG")"
+grep -Fxq 'https://mirror.test/v20/SHASUMS256.txt' "$WGET_LOG" || die "checksum sig: URL not passed; got: $(cat "$WGET_LOG")"
+
+# --- Test 12: no downloader available -> silent return 0, no output ---
+rm -f "$TEST_BIN/wget" "$CURL_LOG" "$WGET_LOG"
+OUTPUT="$( PATH="$TEST_BIN"; export PATH; nvm_download "https://example.test/file" -o - )"
+EXIT_CODE=$?
+[ "${EXIT_CODE}" = "0" ] || die "no downloader: expected exit 0, got ${EXIT_CODE}"
+[ -z "${OUTPUT}" ] || die "no downloader: expected no output, got '${OUTPUT}'"
+
+cleanup

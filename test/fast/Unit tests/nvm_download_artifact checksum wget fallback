@@ -1,0 +1,103 @@
+#!/bin/sh
+
+OLDPATH="$PATH"
+WORK="$PWD/nvm_download-artifact-wgetck-work.$$"
+TEST_BIN="$WORK/bin"
+WGET_CALL_LOG="$WORK/wget_calls.log"
+
+cleanup() {
+  unset -f die cleanup nvm_has nvm_get_mirror nvm_binary_available \
+    nvm_get_download_slug nvm_get_artifact_compression nvm_cache_dir \
+    nvm_version_greater_than_or_equal_to nvm_compare_checksum
+  rm -rf "$WORK"
+  export PATH="$OLDPATH"
+}
+die () { echo "$@" ; cleanup ; exit 1; }
+
+\. ../../../nvm.sh
+
+OLDPATH="$PATH"
+
+mkdir -p "$TEST_BIN" "$WORK/cache/bin" "$WORK/cache/src"
+
+# smart fake wget:
+# - if URL contains SHASUMS → write fake checksum line to stdout (via -O -)
+# - if -O points to a file → create that file (simulate tarball download)
+# - always append call args to the call log
+cat > "$TEST_BIN/wget" << 'FAKE_WGET_EOF'
+#!/bin/sh
+
+# append separator + all args to call log
+echo "WGET_CALL_MARKER" >> "$WGET_CALL_LOG"
+for a in "$@"; do printf "%s\n" "$a" >> "$WGET_CALL_LOG"; done
+
+# find URL and output target
+URL=""
+OUTFILE=""
+PREV=""
+for a in "$@"; do
+  case "$a" in
+    https://*|http://*) URL="$a" ;;
+  esac
+  if [ "$PREV" = "-O" ]; then
+    OUTFILE="$a"
+  fi
+  PREV="$a"
+done
+
+# if this is a SHASUMS request, output a fake checksum to stdout
+case "$URL" in
+  *SHASUMS*)
+    echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  node-v20.0.0-linux-x64.tar.gz"
+    ;;
+esac
+
+# if output goes to a real file (not stdout), create it
+if [ -n "$OUTFILE" ] && [ "$OUTFILE" != "-" ]; then
+  mkdir -p "$(dirname "$OUTFILE")" 2>/dev/null || true
+  touch "$OUTFILE"
+fi
+
+exit 0
+FAKE_WGET_EOF
+chmod +x "$TEST_BIN/wget"
+
+export WGET_CALL_LOG
+export PATH="$TEST_BIN:$OLDPATH"
+
+# hide curl so nvm_download must use wget
+nvm_has() { [ "$1" != curl ] && command -v "$1" >/dev/null 2>&1; }
+
+# mock internal functions
+nvm_get_mirror() { echo "https://mock-mirror.test/dist"; }
+nvm_binary_available() { return 0; }
+nvm_get_download_slug() { echo "node-v20.0.0-linux-x64"; }
+nvm_get_artifact_compression() { echo "tar.gz"; }
+nvm_cache_dir() { echo "$WORK/cache"; }
+nvm_version_greater_than_or_equal_to() { return 0; }
+nvm_compare_checksum() { return 0; }
+
+# run the full download artifact pipeline
+: > "$WGET_CALL_LOG"
+nvm_download_artifact node binary std v20.0.0 2>/dev/null
+EXIT_CODE=$?
+[ "${EXIT_CODE}" = "0" ] || die "nvm_download_artifact failed with exit ${EXIT_CODE}"
+
+# --- Verify wget was called (not curl) ---
+[ -f "$WGET_CALL_LOG" ] || die "wget call log not created"
+
+# count how many wget calls were made (each separated by "WGET_CALL_MARKER")
+CALL_COUNT="$(grep -Fc 'WGET_CALL_MARKER' "$WGET_CALL_LOG")"
+[ "${CALL_COUNT}" -ge 2 ] || die "expected at least 2 wget calls (checksum + tarball), got ${CALL_COUNT}"
+
+# --- Verify checksum download used wget with correct flags ---
+# The checksum call uses: nvm_download -L -s SHASUMS_URL -o -
+# In wget: -s → -q, -o → -O, -L is dropped
+grep -Fq 'SHASUMS' "$WGET_CALL_LOG" || die "no wget call found with SHASUMS URL; log: $(cat "$WGET_CALL_LOG")"
+grep -Fxq -- '-q' "$WGET_CALL_LOG" || die "checksum wget call: -s not translated to -q; log: $(cat "$WGET_CALL_LOG")"
+grep -Fxq -- '-O' "$WGET_CALL_LOG" || die "checksum wget call: -o not translated to -O; log: $(cat "$WGET_CALL_LOG")"
+
+# --- Verify tarball download used wget ---
+grep -q 'node-v20.0.0-linux-x64.tar.gz' "$WGET_CALL_LOG" || die "tarball URL not found in wget calls; log: $(cat "$WGET_CALL_LOG")"
+
+cleanup

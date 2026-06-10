@@ -1,0 +1,137 @@
+#!/bin/sh
+
+OLDPATH="$PATH"
+WORK="$PWD/nvm_download-sanitize-offline.$$"
+TEST_BIN="$WORK/bin"
+ARGV_LOG="$WORK/argv.log"
+PROOF="$WORK/nvm_sanitize_proof"
+
+cleanup() {
+  unset -f die cleanup nvm_has
+  rm -rf "$WORK"
+  rm -f /tmp/nvm_sanitize_proof_file 2>/dev/null || true
+  export PATH="$OLDPATH"
+}
+die () { echo "$@" ; cleanup ; exit 1; }
+
+\. ../../../nvm.sh
+
+OLDPATH="$PATH"
+
+mkdir -p "$TEST_BIN"
+
+# fake curl: record each received argument verbatim
+{
+  echo '#!/bin/sh'
+  echo ': > "$ARGV_LOG"'
+  echo 'for a in "$@"; do printf "%s\n" "$a" >> "$ARGV_LOG"; done'
+  echo 'exit 0'
+} > "$TEST_BIN/curl"
+chmod +x "$TEST_BIN/curl"
+cp "$TEST_BIN/curl" "$TEST_BIN/wget"
+
+export ARGV_LOG PROOF
+export PATH="$TEST_BIN:$OLDPATH"
+
+# ---------- helper: run test on a specific downloader path ----------
+run_download() {
+  local DOWNLOADER_PATH
+  DOWNLOADER_PATH="$1"
+  local HEADER_VALUE
+  HEADER_VALUE="$2"
+
+  if [ "${DOWNLOADER_PATH}" = "wget" ]; then
+    # force wget path via nvm_has override, keeping system tools (sed) available
+    nvm_has() { [ "$1" != curl ] && command -v "$1" >/dev/null 2>&1; }
+    NVM_AUTH_HEADER="${HEADER_VALUE}" nvm_download "https://example.test/f" -o -
+    local RET
+    RET=$?
+    unset -f nvm_has
+    return ${RET}
+  else
+    NVM_AUTH_HEADER="${HEADER_VALUE}" nvm_download "https://example.test/f" -o -
+  fi
+}
+
+get_auth_header_from_log() {
+  # extract the line after --header that starts with "Authorization:"
+  local FOUND
+  FOUND=0
+  while IFS= read -r line; do
+    if [ "${FOUND}" = 1 ]; then
+      echo "${line}"
+      return 0
+    fi
+    if [ "${line}" = "--header" ]; then
+      FOUND=1
+    fi
+  done < "$ARGV_LOG"
+  return 1
+}
+
+# ===== Test each injection vector on both curl and wget paths =====
+
+for DOWNLOADER in curl wget; do
+
+  # --- Test 1: carriage return injection ---
+  # sed processes line-by-line so \n is invisible to the char-class filter,
+  # but \r (0x0d) is NOT in [a-zA-Z0-9:;_. -] and must be stripped.
+  INJECT_HEADER="$(printf 'Bearer token\rEvil')"
+  run_download "${DOWNLOADER}" "${INJECT_HEADER}" || die "${DOWNLOADER}: CR injection download failed"
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  case "${AUTH_VALUE}" in
+    *"$(printf '\r')"*) die "${DOWNLOADER}: carriage return not stripped from auth header" ;;
+  esac
+  [ -n "${AUTH_VALUE}" ] || die "${DOWNLOADER}: auth header should not be empty after CR stripping"
+
+  # --- Test 2: flag-like injection ---
+  # The value contains --header which could be interpreted as an extra flag if quoting is broken
+  run_download "${DOWNLOADER}" 'Bearer token --header X-Evil:true' || die "${DOWNLOADER}: flag-like injection download failed"
+  # Count how many --header arguments appear in the log; must be exactly 1
+  HEADER_COUNT="$(grep -Fxc -- '--header' "$ARGV_LOG")"
+  [ "${HEADER_COUNT}" = "1" ] || die "${DOWNLOADER}: expected exactly 1 --header arg, got ${HEADER_COUNT}; log: $(cat "$ARGV_LOG")"
+  # The Authorization value should contain the flag-like content as data, not as a separate flag
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  case "${AUTH_VALUE}" in
+    *"--header"*) ;; # good - the --header text is inside the value
+    *) die "${DOWNLOADER}: flag-like content not preserved in auth value: '${AUTH_VALUE}'" ;;
+  esac
+
+  # --- Test 3: backtick injection ---
+  rm -f "$PROOF" /tmp/nvm_sanitize_proof_file
+  run_download "${DOWNLOADER}" 'Bearer `touch '"${PROOF}"'`' || die "${DOWNLOADER}: backtick injection download failed"
+  [ ! -e "$PROOF" ] || die "${DOWNLOADER}: backtick injection created proof file!"
+  [ ! -e /tmp/nvm_sanitize_proof_file ] || die "${DOWNLOADER}: backtick injection created proof file in /tmp!"
+  # backticks should be stripped
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  case "${AUTH_VALUE}" in
+    *'`'*) die "${DOWNLOADER}: backticks not stripped: '${AUTH_VALUE}'" ;;
+  esac
+
+  # --- Test 4: $() injection ---
+  rm -f "$PROOF" /tmp/nvm_sanitize_proof_file
+  run_download "${DOWNLOADER}" 'Bearer $(touch '"${PROOF}"')' || die "${DOWNLOADER}: \$() injection download failed"
+  [ ! -e "$PROOF" ] || die "${DOWNLOADER}: \$() injection created proof file!"
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  case "${AUTH_VALUE}" in
+    *'$'*) die "${DOWNLOADER}: dollar sign not stripped: '${AUTH_VALUE}'" ;;
+    *'('*) die "${DOWNLOADER}: open paren not stripped: '${AUTH_VALUE}'" ;;
+    *')'*) die "${DOWNLOADER}: close paren not stripped: '${AUTH_VALUE}'" ;;
+  esac
+
+  # --- Test 5: valid schemes pass through unchanged ---
+  run_download "${DOWNLOADER}" 'Bearer abc123' || die "${DOWNLOADER}: valid Bearer download failed"
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  [ "${AUTH_VALUE}" = 'Authorization: Bearer abc123' ] || die "${DOWNLOADER}: Bearer scheme altered: '${AUTH_VALUE}'"
+
+  run_download "${DOWNLOADER}" 'Basic dXNlcjpwYXNz' || die "${DOWNLOADER}: valid Basic download failed"
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  [ "${AUTH_VALUE}" = 'Authorization: Basic dXNlcjpwYXNz' ] || die "${DOWNLOADER}: Basic scheme altered: '${AUTH_VALUE}'"
+
+  run_download "${DOWNLOADER}" 'token abc_def-123.xyz' || die "${DOWNLOADER}: valid token download failed"
+  AUTH_VALUE="$(get_auth_header_from_log)"
+  [ "${AUTH_VALUE}" = 'Authorization: token abc_def-123.xyz' ] || die "${DOWNLOADER}: token scheme altered: '${AUTH_VALUE}'"
+
+done
+
+cleanup

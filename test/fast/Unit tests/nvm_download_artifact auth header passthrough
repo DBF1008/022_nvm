@@ -1,0 +1,89 @@
+#!/bin/sh
+
+die () { echo "$@" ; exit 1; }
+
+\. ../../../nvm.sh
+
+WORK="$PWD/nvm_download-artifact-auth-work.$$"
+DOWNLOAD_LOG="$WORK/download.log"
+
+cleanup() {
+  unset -f die cleanup nvm_get_mirror nvm_binary_available nvm_get_download_slug \
+    nvm_get_artifact_compression nvm_cache_dir nvm_version_greater_than_or_equal_to \
+    nvm_compare_checksum nvm_download nvm_get_checksum
+  rm -rf "$WORK"
+}
+
+mkdir -p "$WORK/cache/bin" "$WORK/cache/src"
+
+# --- mock internal functions (same pattern as nvm_download_artifact error propagation) ---
+nvm_get_mirror() { echo "https://mock-mirror.test/dist"; }
+nvm_binary_available() { return 0; }
+nvm_get_download_slug() { echo "node-v20.0.0-linux-x64"; }
+nvm_get_artifact_compression() { echo "tar.gz"; }
+nvm_cache_dir() { echo "$WORK/cache"; }
+nvm_version_greater_than_or_equal_to() { return 0; }
+nvm_compare_checksum() { return 0; }
+
+# mock nvm_get_checksum: record NVM_AUTH_HEADER and URL, return a fake checksum
+nvm_get_checksum() {
+  echo "AUTH=${NVM_AUTH_HEADER:-UNSET} URL=SHASUMS" >> "$DOWNLOAD_LOG"
+  echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+}
+
+# mock nvm_download: record NVM_AUTH_HEADER and args, create the output file if -o is used
+nvm_download() {
+  local url
+  local outfile
+  url=''
+  outfile=''
+  for arg in "$@"; do
+    case "${arg}" in
+      https://*|http://*) url="${arg}" ;;
+    esac
+  done
+  # find -o argument and its value
+  local PREV
+  PREV=''
+  for arg in "$@"; do
+    if [ "${PREV}" = '-o' ]; then
+      outfile="${arg}"
+    fi
+    PREV="${arg}"
+  done
+
+  echo "AUTH=${NVM_AUTH_HEADER:-UNSET} URL=${url}" >> "$DOWNLOAD_LOG"
+
+  # create the output file so download "succeeds"
+  if [ -n "${outfile}" ] && [ "${outfile}" != '-' ]; then
+    command mkdir -p "$(dirname "${outfile}")" 2>/dev/null || true
+    command touch "${outfile}"
+  fi
+  return 0
+}
+
+# --- Test 1: NVM_AUTH_HEADER set → visible in both checksum and tarball calls ---
+: > "$DOWNLOAD_LOG"
+NVM_AUTH_HEADER='Bearer pipeline-token' nvm_download_artifact node binary std v20.0.0 2>/dev/null
+EXIT_CODE=$?
+[ "${EXIT_CODE}" = "0" ] || die "nvm_download_artifact failed with exit ${EXIT_CODE}"
+
+# checksum call (via nvm_get_checksum mock) should see the header
+grep -q 'AUTH=Bearer pipeline-token.*URL=SHASUMS' "$DOWNLOAD_LOG" || die "NVM_AUTH_HEADER not visible in checksum download; log: $(cat "$DOWNLOAD_LOG")"
+
+# tarball call (via nvm_download mock) should see the header
+grep -q 'AUTH=Bearer pipeline-token.*URL=.*tar\.gz' "$DOWNLOAD_LOG" || die "NVM_AUTH_HEADER not visible in tarball download; log: $(cat "$DOWNLOAD_LOG")"
+
+# --- Test 2: NVM_AUTH_HEADER unset → no auth in either call ---
+rm -rf "$WORK/cache/bin" "$WORK/cache/src"
+mkdir -p "$WORK/cache/bin" "$WORK/cache/src"
+: > "$DOWNLOAD_LOG"
+unset NVM_AUTH_HEADER
+nvm_download_artifact node binary std v20.0.0 2>/dev/null
+EXIT_CODE=$?
+[ "${EXIT_CODE}" = "0" ] || die "nvm_download_artifact without auth failed with exit ${EXIT_CODE}"
+
+grep -q 'AUTH=UNSET.*URL=SHASUMS' "$DOWNLOAD_LOG" || die "checksum call should show AUTH=UNSET; log: $(cat "$DOWNLOAD_LOG")"
+grep -q 'AUTH=UNSET.*URL=.*tar\.gz' "$DOWNLOAD_LOG" || die "tarball call should show AUTH=UNSET; log: $(cat "$DOWNLOAD_LOG")"
+
+cleanup

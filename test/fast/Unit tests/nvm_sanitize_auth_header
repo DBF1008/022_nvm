@@ -1,0 +1,58 @@
+#!/bin/sh
+
+cleanup() {
+  unset -f die cleanup
+}
+die () { echo "$@" ; cleanup ; exit 1; }
+
+\. ../../../nvm.sh
+
+# --- valid auth schemes must pass through unchanged ---
+
+RESULT="$(nvm_sanitize_auth_header 'Bearer abc123')"
+[ "${RESULT}" = 'Bearer abc123' ] || die "Bearer scheme altered: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header 'Basic dXNlcjpwYXNz')"
+[ "${RESULT}" = 'Basic dXNlcjpwYXNz' ] || die "Basic scheme altered: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header 'token abc_def-123.xyz:456')"
+[ "${RESULT}" = 'token abc_def-123.xyz:456' ] || die "token scheme altered: got '${RESULT}'"
+
+# --- dangerous characters must be stripped ---
+
+RESULT="$(nvm_sanitize_auth_header 'Bearer $(touch /tmp/x)')"
+[ "${RESULT}" = 'Bearer touch tmpx' ] || die "\$() injection not stripped: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header 'Bearer `id`')"
+[ "${RESULT}" = 'Bearer id' ] || die "backtick injection not stripped: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header 'Bearer "quoted"')"
+[ "${RESULT}" = 'Bearer quoted' ] || die "double quotes not stripped: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header "Bearer 'quoted'")"
+[ "${RESULT}" = 'Bearer quoted' ] || die "single quotes not stripped: got '${RESULT}'"
+
+# --- edge cases ---
+
+RESULT="$(nvm_sanitize_auth_header '')"
+[ "${RESULT}" = '' ] || die "empty string not preserved: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header '$()`"'"'"'/{}')"
+[ "${RESULT}" = '' ] || die "pure dangerous chars not stripped to empty: got '${RESULT}'"
+
+RESULT="$(nvm_sanitize_auth_header 'Basic user:pass')"
+[ "${RESULT}" = 'Basic user:pass' ] || die "colon stripped incorrectly: got '${RESULT}'"
+
+# semicolons are in the allowed charset [a-zA-Z0-9:;_. -]
+RESULT="$(nvm_sanitize_auth_header 'Bearer abc;def')"
+[ "${RESULT}" = 'Bearer abc;def' ] || die "semicolon stripped unexpectedly: got '${RESULT}'"
+
+# backslash must be stripped
+RESULT="$(nvm_sanitize_auth_header 'Bearer a\\b')"
+[ "${RESULT}" = 'Bearer ab' ] || die "backslash not stripped: got '${RESULT}'"
+
+# slash must be stripped
+RESULT="$(nvm_sanitize_auth_header 'Bearer a/b')"
+[ "${RESULT}" = 'Bearer ab' ] || die "slash not stripped: got '${RESULT}'"
+
+cleanup

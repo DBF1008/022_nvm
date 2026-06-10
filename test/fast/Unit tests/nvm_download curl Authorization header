@@ -1,0 +1,47 @@
+#!/bin/sh
+
+OLDPATH="$PATH"
+WORK="$PWD/nvm_download-curlauth-work.$$"
+TEST_BIN="$WORK/bin"
+ARGV_LOG="$WORK/argv.log"
+
+cleanup() {
+  unset -f die cleanup nvm_has
+  rm -rf "$WORK"
+  export PATH="$OLDPATH"
+}
+die () { echo "$@" ; cleanup ; exit 1; }
+
+\. ../../../nvm.sh
+
+OLDPATH="$PATH"
+
+mkdir -p "$TEST_BIN"
+
+# fake curl: record each received argument verbatim, then succeed
+{
+  echo '#!/bin/sh'
+  echo ': > "$ARGV_LOG"'
+  echo 'for a in "$@"; do printf "%s\n" "$a" >> "$ARGV_LOG"; done'
+  echo 'exit 0'
+} > "$TEST_BIN/curl"
+chmod +x "$TEST_BIN/curl"
+
+export ARGV_LOG
+export PATH="$TEST_BIN:$OLDPATH"
+
+# Test 1: with Bearer token, curl must receive --header and Authorization value
+NVM_AUTH_HEADER='Bearer test-token' nvm_download "https://example.test/file" -o - || die 'nvm_download (curl) returned nonzero with auth header'
+grep -Fxqe '--header' "$ARGV_LOG" || die "curl did not receive --header; got: $(cat "$ARGV_LOG")"
+grep -Fxq 'Authorization: Bearer test-token' "$ARGV_LOG" || die "curl did not receive correct Authorization header; got: $(cat "$ARGV_LOG")"
+
+# Test 2: with NVM_AUTH_HEADER unset, curl must NOT receive --header
+unset NVM_AUTH_HEADER
+nvm_download "https://example.test/file" -o - || die 'nvm_download (curl) returned nonzero without auth header'
+grep -Fxqe '--header' "$ARGV_LOG" && die "curl should not receive --header when NVM_AUTH_HEADER is unset; got: $(cat "$ARGV_LOG")"
+
+# Test 3: with NVM_AUTH_HEADER set to empty string, curl must NOT receive --header
+NVM_AUTH_HEADER='' nvm_download "https://example.test/file" -o - || die 'nvm_download (curl) returned nonzero with empty auth header'
+grep -Fxqe '--header' "$ARGV_LOG" && die "curl should not receive --header when NVM_AUTH_HEADER is empty; got: $(cat "$ARGV_LOG")"
+
+cleanup

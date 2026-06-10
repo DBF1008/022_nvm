@@ -1,0 +1,66 @@
+#!/bin/sh
+
+die () { echo "$@" ; exit 1; }
+
+\. ../../../nvm.sh
+
+unset NVM_NODEJS_ORG_MIRROR
+unset NVM_IOJS_ORG_MIRROR
+
+# helper: assert both node-std and iojs-std reject the mirror value
+testMirrorReject() {
+  NVM_NODEJS_ORG_MIRROR="${1-}"
+  ! nvm_get_mirror node std 2>/dev/null || die "node-std should reject '${1-}'"
+  [ "$(nvm_get_mirror node std 2>/dev/null)" = "" ] || die "node-std should produce empty output for '${1-}'"
+
+  NVM_IOJS_ORG_MIRROR="${1-}"
+  ! nvm_get_mirror iojs std 2>/dev/null || die "iojs-std should reject '${1-}'"
+  [ "$(nvm_get_mirror iojs std 2>/dev/null)" = "" ] || die "iojs-std should produce empty output for '${1-}'"
+
+  unset NVM_NODEJS_ORG_MIRROR
+  unset NVM_IOJS_ORG_MIRROR
+}
+
+# helper: assert both node-std and iojs-std accept the mirror value
+testMirrorAccept() {
+  NVM_NODEJS_ORG_MIRROR="${1-}"
+  [ "$(nvm_get_mirror node std 2>/dev/null)" = "${1-}" ] || die "node-std should accept '${1-}'"
+
+  NVM_IOJS_ORG_MIRROR="${1-}"
+  [ "$(nvm_get_mirror iojs std 2>/dev/null)" = "${1-}" ] || die "iojs-std should accept '${1-}'"
+
+  unset NVM_NODEJS_ORG_MIRROR
+  unset NVM_IOJS_ORG_MIRROR
+}
+
+# percent-encoded characters (% is not in [a-zA-Z0-9./_-])
+testMirrorReject 'https://evil.com/%0d%0aInjected'
+
+# query string (? is not allowed)
+testMirrorReject 'https://evil.com/dist?callback=evil'
+
+# fragment (# is not allowed)
+testMirrorReject 'https://evil.com/dist#fragment'
+
+# port number (: after protocol is not allowed in path portion)
+testMirrorReject 'https://mirror.local:8080/dist'
+
+# dollar sign / shell variable reference
+testMirrorReject 'https://evil.com/$NVM_DIR'
+
+# at sign (@ is not allowed)
+testMirrorReject 'https://user@evil.com/dist'
+
+# ampersand
+testMirrorReject 'https://evil.com/dist&rm+-rf+/'
+
+# equals sign
+testMirrorReject 'https://evil.com/dist?x=1'
+
+# curly braces
+testMirrorReject 'https://evil.com/${PATH}'
+
+# valid mirrors with underscores, dashes, dots, and slashes
+testMirrorAccept 'https://my-mirror_01.example.com/node-dist'
+testMirrorAccept 'https://registry.npmmirror.com/node/dist'
+testMirrorAccept 'http://internal.corp/mirrors/nodejs'
